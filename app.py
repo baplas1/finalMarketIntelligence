@@ -130,13 +130,104 @@ ensure_csv_exists()
 st.set_page_config(page_title="Bridge Procurement", layout="wide")
 st.title("🌉 Bridge Procurement")
 
-manual_tab, excel_tab = st.tabs(["Manual Input", "Excel Viewer"])
+dashboard_tab, manual_tab, excel_tab = st.tabs(["Dashboard", "Analysis", "Excel Viewer"])
 
 if "edit_index" not in st.session_state:
     st.session_state.edit_index = None
 
 edit_mode = st.session_state.edit_index is not None
 edit_row = {}
+
+
+def show_metric_card(label: str, value) -> None:
+    st.metric(label, value)
+
+
+def render_chart_from_sheet(sheet_name: str, title: str, x_col: str, y_col: str, kind: str = "bar") -> None:
+    try:
+        chart_df = load_excel_sheet(sheet_name)
+    except Exception as exc:
+        st.warning(f"{title}: unable to load sheet ({exc})")
+        return
+
+    if chart_df.shape[1] < 2:
+        st.warning(f"{title}: not enough columns found in {sheet_name}.")
+        return
+
+    if x_col in chart_df.columns and y_col in chart_df.columns:
+        chart_df = chart_df[[x_col, y_col]].copy()
+    else:
+        chart_df = chart_df.iloc[:, :2].copy()
+        chart_df.columns = [x_col, y_col]
+
+    chart_df = chart_df.dropna()
+    if chart_df.empty:
+        st.info(f"{title}: no data available.")
+        return
+
+    st.subheader(title)
+    if kind == "line":
+        st.line_chart(chart_df.set_index(x_col)[y_col])
+    else:
+        st.bar_chart(chart_df.set_index(x_col)[y_col])
+
+
+with dashboard_tab:
+    st.subheader("Workbook Dashboard")
+    try:
+        workbook = pd.ExcelFile("bridge_procurement_Analysis.xlsx")
+        workbook_sheets = {sheet_name: load_excel_sheet(sheet_name) for sheet_name in workbook.sheet_names}
+
+        raw_data = workbook_sheets.get("Raw Data", pd.DataFrame())
+        summary_data = workbook_sheets.get("Summary", pd.DataFrame())
+
+        if not summary_data.empty and {"Metric", "Value"}.issubset(summary_data.columns):
+            metric_map = dict(zip(summary_data["Metric"], summary_data["Value"]))
+            metric_cols = st.columns(4)
+            with metric_cols[0]:
+                show_metric_card("Total Tenders", metric_map.get("Total Tenders", 0))
+            with metric_cols[1]:
+                show_metric_card("Total Award Value", metric_map.get("Total Award Value", 0))
+            with metric_cols[2]:
+                show_metric_card("Average Award", metric_map.get("Average Award", 0))
+            with metric_cols[3]:
+                show_metric_card("Unique Vendors", metric_map.get("Unique Vendors", 0))
+
+        chart_left, chart_right = st.columns(2)
+        with chart_left:
+            render_chart_from_sheet("Tenders by Year", "Tenders by Year", "Year", "Tender Count", kind="line")
+        with chart_right:
+            render_chart_from_sheet("Award Value by Year", "Award Value by Year", "Year", "Award Value", kind="line")
+
+        chart_left, chart_right = st.columns(2)
+        with chart_left:
+            render_chart_from_sheet("Top Vendors", "Top Vendors", "Vendor", "Awards")
+        with chart_right:
+            render_chart_from_sheet("Vendor Award Value", "Vendor Award Value", "Vendor", "Award Value")
+
+        chart_left, chart_right = st.columns(2)
+        with chart_left:
+            render_chart_from_sheet("Top Organizations", "Top Organizations", "Organization", "Count")
+        with chart_right:
+            render_chart_from_sheet("Organizations by Value", "Organizations by Value", "Issued by Organization", "Award Value")
+
+        chart_left, chart_right = st.columns(2)
+        with chart_left:
+            render_chart_from_sheet("Work Type Counts", "Work Type Counts", "Work Type", "Count")
+        with chart_right:
+            render_chart_from_sheet("Contract Value Distribution", "Contract Value Distribution", "Award Range", "Count")
+
+        chart_left, chart_right = st.columns(2)
+        with chart_left:
+            render_chart_from_sheet("Asset Types", "Asset Types", "Asset Type", "Count")
+        with chart_right:
+            render_chart_from_sheet("Data Sources", "Data Sources", "Data Source", "Count")
+
+        if not raw_data.empty:
+            st.subheader("Raw Data Preview")
+            st.dataframe(raw_data.head(25), use_container_width=True, height=350)
+    except FileNotFoundError:
+        st.warning("bridge_procurement_Analysis.xlsx was not found. Run process.py or main.py to generate it first.")
 
 if edit_mode:
     edit_df = pd.read_csv(OUTPUT_FILE)
