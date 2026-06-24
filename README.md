@@ -1,1 +1,1 @@
-# finalMarketIntelligence
+# market_intelligence
