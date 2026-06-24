@@ -9,6 +9,9 @@ import pandas as pd
 import streamlit as st
 
 OUTPUT_FILE = Path("manual_input.csv")
+BC_WIDE_DIR = Path("Files")
+CANADA_WIDE_DIR = Path("csv_folder")
+WORKBOOK_FILE = Path("bridge_procurement_Analysis.xlsx")
 
 FIELDNAMES = [
     "Data Source",
@@ -24,9 +27,16 @@ FIELDNAMES = [
 ]
 
 
+def get_workbook_mtime() -> float:
+    return WORKBOOK_FILE.stat().st_mtime if WORKBOOK_FILE.exists() else 0.0
+
+
+WORKBOOK_MTIME = get_workbook_mtime()
+
+
 @st.cache_data
-def load_lookup_values():
-    df = pd.read_excel("bridge_procurement_Analysis.xlsx", sheet_name="Raw Data")
+def load_lookup_values(workbook_mtime: float):
+    df = pd.read_excel(WORKBOOK_FILE, sheet_name="Raw Data")
 
     def get_values(column, split_semicolon=False):
         values = set()
@@ -51,12 +61,12 @@ def load_lookup_values():
     }
 
 
-LOOKUPS = load_lookup_values()
+LOOKUPS = load_lookup_values(WORKBOOK_MTIME)
 
 
 @st.cache_data
-def load_excel_sheet(sheet_name: str) -> pd.DataFrame:
-    return pd.read_excel("bridge_procurement_Analysis.xlsx", sheet_name=sheet_name)
+def load_excel_sheet(sheet_name: str, workbook_mtime: float) -> pd.DataFrame:
+    return pd.read_excel(WORKBOOK_FILE, sheet_name=sheet_name)
 
 
 def ensure_csv_exists():
@@ -103,6 +113,41 @@ def run_script(script_name):
     )
 
 
+def ensure_upload_directories() -> None:
+    BC_WIDE_DIR.mkdir(exist_ok=True)
+    CANADA_WIDE_DIR.mkdir(exist_ok=True)
+
+
+def unique_destination_path(directory: Path, filename: str) -> Path:
+    destination = directory / filename
+    if not destination.exists():
+        return destination
+
+    suffix = Path(filename).suffix
+    stem = Path(filename).stem
+    counter = 1
+    while True:
+        candidate = directory / f"{stem}_{counter}{suffix}"
+        if not candidate.exists():
+            return candidate
+        counter += 1
+
+
+def save_uploaded_files(uploaded_files, destination_dir: Path) -> list[str]:
+    saved_files = []
+    for uploaded_file in uploaded_files:
+        destination = unique_destination_path(destination_dir, uploaded_file.name)
+        with destination.open("wb") as target:
+            target.write(uploaded_file.getbuffer())
+        saved_files.append(destination.name)
+    return saved_files
+
+
+def refresh_workbook_view() -> None:
+    st.cache_data.clear()
+    st.rerun()
+
+
 def autocomplete_or_custom(label, options, default="", key=""):
     options = sorted(set(str(x) for x in options if str(x).strip()))
 
@@ -126,6 +171,7 @@ def autocomplete_or_custom(label, options, default="", key=""):
 # ── Page setup ────────────────────────────────────────────────────────────────
 
 ensure_csv_exists()
+ensure_upload_directories()
 
 st.set_page_config(page_title="Bridge Procurement", layout="wide")
 st.title("🌉 Bridge Procurement")
@@ -145,7 +191,7 @@ def show_metric_card(label: str, value) -> None:
 
 def render_chart_from_sheet(sheet_name: str, title: str, x_col: str, y_col: str, kind: str = "bar") -> None:
     try:
-        chart_df = load_excel_sheet(sheet_name)
+        chart_df = load_excel_sheet(sheet_name, WORKBOOK_MTIME)
     except Exception as exc:
         st.warning(f"{title}: unable to load sheet ({exc})")
         return
@@ -175,8 +221,8 @@ def render_chart_from_sheet(sheet_name: str, title: str, x_col: str, y_col: str,
 with dashboard_tab:
     st.subheader("Workbook Dashboard")
     try:
-        workbook = pd.ExcelFile("bridge_procurement_Analysis.xlsx")
-        workbook_sheets = {sheet_name: load_excel_sheet(sheet_name) for sheet_name in workbook.sheet_names}
+        workbook = pd.ExcelFile(WORKBOOK_FILE)
+        workbook_sheets = {sheet_name: load_excel_sheet(sheet_name, WORKBOOK_MTIME) for sheet_name in workbook.sheet_names}
 
         raw_data = workbook_sheets.get("Raw Data", pd.DataFrame())
         summary_data = workbook_sheets.get("Summary", pd.DataFrame())
@@ -235,6 +281,40 @@ if edit_mode:
     st.info(f"✏️ Editing row {st.session_state.edit_index}")
 
 with manual_tab:
+    st.subheader("Upload Source Files")
+
+    upload_col1, upload_col2 = st.columns(2)
+    with upload_col1:
+        bc_files = st.file_uploader(
+            "Upload bcWide spreadsheets (.xlsx or .csv)",
+            type=["xlsx", "csv"],
+            accept_multiple_files=True,
+            key="bcwide_upload",
+        )
+        if st.button("Save bcWide files to Files/", use_container_width=True):
+            if not bc_files:
+                st.warning("Select one or more bcWide files first.")
+            else:
+                saved = save_uploaded_files(bc_files, BC_WIDE_DIR)
+                st.success(f"Saved {len(saved)} file(s) to Files/: {', '.join(saved)}")
+                refresh_workbook_view()
+
+    with upload_col2:
+        canada_files = st.file_uploader(
+            "Upload canadaWide spreadsheets (.csv)",
+            type=["csv"],
+            accept_multiple_files=True,
+            key="canadawide_upload",
+        )
+        if st.button("Save canadaWide files to csv_folder/", use_container_width=True):
+            if not canada_files:
+                st.warning("Select one or more canadaWide CSV files first.")
+            else:
+                saved = save_uploaded_files(canada_files, CANADA_WIDE_DIR)
+                st.success(f"Saved {len(saved)} file(s) to csv_folder/: {', '.join(saved)}")
+                refresh_workbook_view()
+
+    st.divider()
     # ── Input form ────────────────────────────────────────────────────────────
 
     col1, col2 = st.columns(2)
@@ -376,6 +456,7 @@ with manual_tab:
                 result = run_script("process.py")
             if result.returncode == 0:
                 st.success("process.py finished successfully.")
+                refresh_workbook_view()
             else:
                 st.error(result.stderr)
                 st.code(result.stdout)
@@ -386,6 +467,7 @@ with manual_tab:
                 result = run_script("main.py")
             if result.returncode == 0:
                 st.success("main.py finished successfully.")
+                refresh_workbook_view()
             else:
                 st.error(result.stderr)
                 st.code(result.stdout)
@@ -465,11 +547,22 @@ with manual_tab:
 
 with excel_tab:
     st.subheader("bridge_procurement_Analysis.xlsx Viewer")
-    workbook = pd.ExcelFile("bridge_procurement_Analysis.xlsx")
-    sheet_tabs = st.tabs(workbook.sheet_names)
+    try:
+        with open("bridge_procurement_Analysis.xlsx", "rb") as f:
+            st.download_button(
+                "⬇ Download bridge_procurement_Analysis.xlsx",
+                f,
+                file_name="bridge_procurement_Analysis.xlsx",
+                use_container_width=True,
+            )
 
-    for sheet_name, sheet_tab in zip(workbook.sheet_names, sheet_tabs):
-        with sheet_tab:
-            sheet_df = load_excel_sheet(sheet_name)
-            st.caption(f"{sheet_name} · {len(sheet_df)} rows · {len(sheet_df.columns)} columns")
-            st.dataframe(sheet_df, use_container_width=True, height=550)
+        workbook = pd.ExcelFile(WORKBOOK_FILE)
+        sheet_tabs = st.tabs(workbook.sheet_names)
+
+        for sheet_name, sheet_tab in zip(workbook.sheet_names, sheet_tabs):
+            with sheet_tab:
+                sheet_df = load_excel_sheet(sheet_name, WORKBOOK_MTIME)
+                st.caption(f"{sheet_name} · {len(sheet_df)} rows · {len(sheet_df.columns)} columns")
+                st.dataframe(sheet_df, use_container_width=True, height=550)
+    except FileNotFoundError:
+        st.warning("bridge_procurement_Analysis.xlsx was not found. Run process.py or main.py to generate it first.")
